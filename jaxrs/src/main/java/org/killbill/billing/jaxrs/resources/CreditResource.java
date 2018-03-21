@@ -1,7 +1,9 @@
 /*
  * Copyright 2010-2013 Ning, Inc.
+ * Copyright 2014-2018 Groupon, Inc
+ * Copyright 2014-2018 The Billing Project, LLC
  *
- * Ning licenses this file to you under the Apache License, version 2.0
+ * The Billing Project licenses this file to you under the Apache License, version 2.0
  * (the "License"); you may not use this file except in compliance with the
  * License.  You may obtain a copy of the License at:
  *
@@ -62,7 +64,7 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 
 @Singleton
 @Path(JaxrsResource.CREDITS_PATH)
-@Api(value = JaxrsResource.CREDITS_PATH, description = "Operations on credits")
+@Api(value = JaxrsResource.CREDITS_PATH, description = "Operations on credits", tags="Credit")
 public class CreditResource extends JaxRsResourceBase {
 
     private final InvoiceUserApi invoiceUserApi;
@@ -89,10 +91,10 @@ public class CreditResource extends JaxRsResourceBase {
     @ApiOperation(value = "Retrieve a credit by id", response = CreditJson.class)
     @ApiResponses(value = {@ApiResponse(code = 400, message = "Invalid credit id supplied"),
                            @ApiResponse(code = 404, message = "Credit not found")})
-    public Response getCredit(@PathParam("creditId") final String creditId,
+    public Response getCredit(@PathParam("creditId") final UUID creditId,
                               @javax.ws.rs.core.Context final HttpServletRequest request) throws InvoiceApiException, AccountApiException {
         final TenantContext tenantContext = context.createTenantContextNoAccountId(request);
-        final InvoiceItem credit = invoiceUserApi.getCreditById(UUID.fromString(creditId), tenantContext);
+        final InvoiceItem credit = invoiceUserApi.getCreditById(creditId, tenantContext);
         final Invoice invoice = invoiceUserApi.getInvoice(credit.getInvoiceId(), tenantContext);
         final CreditJson creditJson = new CreditJson(invoice, credit);
         return Response.status(Response.Status.OK).entity(creditJson).build();
@@ -117,18 +119,18 @@ public class CreditResource extends JaxRsResourceBase {
 
         final CallContext callContext = context.createCallContextNoAccountId(createdBy, reason, comment, request);
 
-        final Account account = accountUserApi.getAccountById(UUID.fromString(json.getAccountId()), callContext);
+        final Account account = accountUserApi.getAccountById(json.getAccountId(), callContext);
         final LocalDate effectiveDate = new LocalDate(clock.getUTCNow(), account.getTimeZone());
 
         final InvoiceItem credit;
         if (json.getInvoiceId() != null) {
             // Apply an invoice level credit
-            credit = invoiceUserApi.insertCreditForInvoice(account.getId(), UUID.fromString(json.getInvoiceId()), json.getCreditAmount(),
-                                                           effectiveDate, account.getCurrency(), json.getDescription(), callContext);
+            credit = invoiceUserApi.insertCreditForInvoice(account.getId(), json.getInvoiceId(), json.getCreditAmount(),
+                                                           effectiveDate, account.getCurrency(), json.getDescription(), json.getItemDetails(), callContext);
         } else {
             // Apply a account level credit
             credit = invoiceUserApi.insertCredit(account.getId(), json.getCreditAmount(), effectiveDate,
-                                                 account.getCurrency(), autoCommit, json.getDescription(), callContext);
+                                                 account.getCurrency(), autoCommit, json.getDescription(), json.getItemDetails(), callContext);
         }
 
         return uriBuilder.buildResponse(uriInfo, CreditResource.class, "getCredit", credit.getId(), request);

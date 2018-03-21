@@ -91,7 +91,7 @@ import static javax.ws.rs.core.MediaType.APPLICATION_XML;
 
 @Singleton
 @Path(JaxrsResource.CATALOG_PATH)
-@Api(value = JaxrsResource.CATALOG_PATH, description = "Catalog information")
+@Api(value = JaxrsResource.CATALOG_PATH, description = "Catalog information", tags="Catalog")
 public class CatalogResource extends JaxRsResourceBase {
 
     private final CatalogUserApi catalogUserApi;
@@ -118,9 +118,29 @@ public class CatalogResource extends JaxRsResourceBase {
     @Produces(APPLICATION_XML)
     @ApiOperation(value = "Retrieve the full catalog as XML", response = String.class, hidden = true)
     @ApiResponses(value = {})
-    public Response getCatalogXml(@javax.ws.rs.core.Context final HttpServletRequest request) throws Exception {
+    public Response getCatalogXml(@QueryParam(QUERY_REQUESTED_DT) final String requestedDate,
+                                  @javax.ws.rs.core.Context final HttpServletRequest request) throws Exception {
         final TenantContext tenantContext = context.createTenantContextNoAccountId(request);
-        return Response.status(Status.OK).entity(XMLWriter.writeXML((VersionedCatalog) catalogUserApi.getCatalog(catalogName, tenantContext), VersionedCatalog.class)).build();
+        final DateTime catalogDateVersion = requestedDate != null ?
+                                            DATE_TIME_FORMATTER.parseDateTime(requestedDate).toDateTime(DateTimeZone.UTC) :
+                                            null;
+
+        final VersionedCatalog catalog = (VersionedCatalog) catalogUserApi.getCatalog(catalogName, tenantContext);
+        final String result;
+        if (catalogDateVersion != null) {
+            final VersionedCatalog oneVersionCatalog = new VersionedCatalog();
+            for (final StandaloneCatalog v : catalog.getVersions()) {
+                if (v.getEffectiveDate().compareTo(catalogDateVersion.toDate()) >= 0) {
+                    oneVersionCatalog.add(v);
+                    break;
+                }
+            }
+            result = XMLWriter.writeXML(oneVersionCatalog, VersionedCatalog.class);
+        } else {
+            result = XMLWriter.writeXML(catalog, VersionedCatalog.class);
+        }
+
+        return Response.status(Status.OK).entity(result).build();
     }
 
     @TimedResource
@@ -163,6 +183,25 @@ public class CatalogResource extends JaxRsResourceBase {
                 result.add(new CatalogJson(catalog, new DateTime(v.getEffectiveDate())));
             }
         }
+        return Response.status(Status.OK).entity(result).build();
+    }
+
+    @TimedResource
+    @GET
+    @Path("/versions")
+    @Produces(APPLICATION_JSON)
+    @ApiOperation(value = "Retrieve a list of catalog versions", response = DateTime.class, responseContainer = "List")
+    @ApiResponses(value = {})
+    public Response getCatalogVersionJson(@javax.ws.rs.core.Context final HttpServletRequest request) throws Exception {
+
+        final TenantContext tenantContext = context.createTenantContextNoAccountId(request);
+        final VersionedCatalog catalog = (VersionedCatalog) catalogUserApi.getCatalog(catalogName, tenantContext);
+
+        final List<DateTime> result = new ArrayList<DateTime>();
+        for (final StandaloneCatalog v : catalog.getVersions()) {
+            result.add(new DateTime(v.getEffectiveDate()));
+        }
+
         return Response.status(Status.OK).entity(result).build();
     }
 
@@ -222,12 +261,12 @@ public class CatalogResource extends JaxRsResourceBase {
     @Produces(APPLICATION_JSON)
     @ApiOperation(value = "Retrieve plan for a given subscription and date", response = PlanJson.class)
     @ApiResponses(value = {})
-    public Response getPlanForSubscriptionAndDate(@QueryParam("subscriptionId") final String subscriptionIdString,
+    public Response getPlanForSubscriptionAndDate(@QueryParam("subscriptionId") final UUID subscriptionId,
                                                   @QueryParam("requestedDate") final String requestedDateString,
                                                   @javax.ws.rs.core.Context final HttpServletRequest request) throws SubscriptionApiException, CurrencyValueNull {
-        verifyNonNullOrEmpty(subscriptionIdString, "Subscription id needs to be specified");
+        verifyNonNullOrEmpty(subscriptionId, "Subscription id needs to be specified");
 
-        final SubscriptionEvent lastEventBeforeRequestedDate = getLastEventBeforeDate(subscriptionIdString, requestedDateString, request);
+        final SubscriptionEvent lastEventBeforeRequestedDate = getLastEventBeforeDate(subscriptionId, requestedDateString, request);
         if (lastEventBeforeRequestedDate == null) {
             return Response.status(Status.BAD_REQUEST).entity(String.format("%s is before the subscription start date", requestedDateString)).type("text/plain").build();
         }
@@ -248,12 +287,12 @@ public class CatalogResource extends JaxRsResourceBase {
     @Produces(APPLICATION_JSON)
     @ApiOperation(value = "Retrieve phase for a given subscription and date", response = PhaseJson.class)
     @ApiResponses(value = {})
-    public Response getPhaseForSubscriptionAndDate(@QueryParam("subscriptionId") final String subscriptionIdString,
+    public Response getPhaseForSubscriptionAndDate(@QueryParam("subscriptionId") final UUID subscriptionId,
                                                    @QueryParam("requestedDate") final String requestedDateString,
                                                    @javax.ws.rs.core.Context final HttpServletRequest request) throws SubscriptionApiException, CurrencyValueNull {
-        verifyNonNullOrEmpty(subscriptionIdString, "Subscription id needs to be specified");
+        verifyNonNullOrEmpty(subscriptionId, "Subscription id needs to be specified");
 
-        final SubscriptionEvent lastEventBeforeRequestedDate = getLastEventBeforeDate(subscriptionIdString, requestedDateString, request);
+        final SubscriptionEvent lastEventBeforeRequestedDate = getLastEventBeforeDate(subscriptionId, requestedDateString, request);
         if (lastEventBeforeRequestedDate == null) {
             return Response.status(Status.BAD_REQUEST).entity(String.format("%s is before the subscription start date", requestedDateString)).type("text/plain").build();
         }
@@ -274,12 +313,12 @@ public class CatalogResource extends JaxRsResourceBase {
     @Produces(APPLICATION_JSON)
     @ApiOperation(value = "Retrieve product for a given subscription and date", response = ProductJson.class)
     @ApiResponses(value = {})
-    public Response getProductForSubscriptionAndDate(@QueryParam("subscriptionId") final String subscriptionIdString,
+    public Response getProductForSubscriptionAndDate(@QueryParam("subscriptionId") final UUID subscriptionId,
                                                      @QueryParam("requestedDate") final String requestedDateString,
                                                      @javax.ws.rs.core.Context final HttpServletRequest request) throws SubscriptionApiException {
-        verifyNonNullOrEmpty(subscriptionIdString, "Subscription id needs to be specified");
+        verifyNonNullOrEmpty(subscriptionId, "Subscription id needs to be specified");
 
-        final SubscriptionEvent lastEventBeforeRequestedDate = getLastEventBeforeDate(subscriptionIdString, requestedDateString, request);
+        final SubscriptionEvent lastEventBeforeRequestedDate = getLastEventBeforeDate(subscriptionId, requestedDateString, request);
         if (lastEventBeforeRequestedDate == null) {
             return Response.status(Status.BAD_REQUEST).entity(String.format("%s is before the subscription start date", requestedDateString)).type("text/plain").build();
         }
@@ -300,12 +339,12 @@ public class CatalogResource extends JaxRsResourceBase {
     @Produces(APPLICATION_JSON)
     @ApiOperation(value = "Retrieve priceList for a given subscription and date", response = PriceListJson.class)
     @ApiResponses(value = {})
-    public Response getPriceListForSubscriptionAndDate(@QueryParam("subscriptionId") final String subscriptionIdString,
+    public Response getPriceListForSubscriptionAndDate(@QueryParam("subscriptionId") final UUID subscriptionId,
                                                        @QueryParam("requestedDate") final String requestedDateString,
                                                        @javax.ws.rs.core.Context final HttpServletRequest request) throws SubscriptionApiException {
-        verifyNonNullOrEmpty(subscriptionIdString, "Subscription id needs to be specified");
+        verifyNonNullOrEmpty(subscriptionId, "Subscription id needs to be specified");
 
-        final SubscriptionEvent lastEventBeforeRequestedDate = getLastEventBeforeDate(subscriptionIdString, requestedDateString, request);
+        final SubscriptionEvent lastEventBeforeRequestedDate = getLastEventBeforeDate(subscriptionId, requestedDateString, request);
         if (lastEventBeforeRequestedDate == null) {
             return Response.status(Status.BAD_REQUEST).entity(String.format("%s is before the subscription start date", requestedDateString)).type("text/plain").build();
         }
@@ -320,14 +359,14 @@ public class CatalogResource extends JaxRsResourceBase {
         return Response.status(Status.OK).entity(priceListJson).build();
     }
 
-    private SubscriptionEvent getLastEventBeforeDate(final String subscriptionIdString, final String requestedDateString, final HttpServletRequest request) throws SubscriptionApiException {
+    private SubscriptionEvent getLastEventBeforeDate(final UUID subscriptionId, final String requestedDateString, final HttpServletRequest request) throws SubscriptionApiException {
         final TenantContext tenantContext = context.createTenantContextNoAccountId(request);
         final DateTime requestedDateTime = requestedDateString != null ?
                                            DATE_TIME_FORMATTER.parseDateTime(requestedDateString).toDateTime(DateTimeZone.UTC) :
                                            clock.getUTCNow();
         final LocalDate requestedDate = requestedDateTime.toLocalDate();
 
-        final Subscription subscription = subscriptionApi.getSubscriptionForEntitlementId(UUID.fromString(subscriptionIdString), tenantContext);
+        final Subscription subscription = subscriptionApi.getSubscriptionForEntitlementId(subscriptionId, tenantContext);
         SubscriptionEvent lastEventBeforeRequestedDate = null;
         for (final SubscriptionEvent subscriptionEvent : subscription.getSubscriptionEvents()) {
             if (lastEventBeforeRequestedDate == null) {

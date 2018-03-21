@@ -90,7 +90,7 @@ import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 //
 //
 @Path(JaxrsResource.TEST_PATH)
-@Api(value = JaxrsResource.TEST_PATH, description = "Operations for testing")
+@Api(value = JaxrsResource.TEST_PATH, description = "Operations for testing", hidden=true)
 public class TestResource extends JaxRsResourceBase {
 
     private static final Logger log = LoggerFactory.getLogger(TestResource.class);
@@ -181,7 +181,6 @@ public class TestResource extends JaxRsResourceBase {
 
         final ClockMock testClock = getClockMock();
         if (requestedClockDate == null) {
-            log.info("************      RESETTING CLOCK to " + clock.getUTCNow());
             testClock.resetDeltaFromReality();
         } else {
             final DateTime newTime = DATE_TIME_FORMATTER.parseDateTime(requestedClockDate).toDateTime(DateTimeZone.UTC);
@@ -256,20 +255,20 @@ public class TestResource extends JaxRsResourceBase {
 
     private boolean areAllNotificationsProcessed(final Long tenantRecordId) {
         int nbNotifications = 0;
-        final Iterator<NotificationQueue> iterator = notificationQueueService.getNotificationQueues().iterator();
-        try {
-            while (iterator.hasNext()) {
-                final NotificationQueue notificationQueue = iterator.next();
-                for (final NotificationEventWithMetadata<NotificationEvent> notificationEvent : notificationQueue.getFutureOrInProcessingNotificationForSearchKey2(null, tenantRecordId)) {
+        for (final NotificationQueue notificationQueue : notificationQueueService.getNotificationQueues()) {
+            final Iterator<NotificationEventWithMetadata<NotificationEvent>> iterator = notificationQueue.getFutureOrInProcessingNotificationForSearchKey2(null, tenantRecordId).iterator();
+            try {
+                while (iterator.hasNext()) {
+                    final NotificationEventWithMetadata<NotificationEvent> notificationEvent = iterator.next();
                     if (!notificationEvent.getEffectiveDate().isAfter(clock.getUTCNow())) {
                         nbNotifications += 1;
                     }
                 }
-            }
-        } finally {
-            // Go through all results to close the connection
-            while (iterator.hasNext()) {
-                iterator.next();
+            } finally {
+                // Go through all results to close the connection
+                while (iterator.hasNext()) {
+                    iterator.next();
+                }
             }
         }
         if (nbNotifications != 0) {

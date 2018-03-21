@@ -78,7 +78,7 @@ public class CleanupListener implements ServletContextListener {
             }
         }
 
-        // avoid memory leaks: https://logback.qos.ch/manual/jmxConfig.html
+//         avoid memory leaks: https://logback.qos.ch/manual/jmxConfig.html
         LoggerContext lc = (LoggerContext) LoggerFactory.getILoggerFactory();
         lc.stop();
     }
