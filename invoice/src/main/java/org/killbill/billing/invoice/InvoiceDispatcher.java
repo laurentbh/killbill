@@ -75,12 +75,9 @@ import org.killbill.billing.invoice.generator.InvoiceWithMetadata;
 import org.killbill.billing.invoice.generator.InvoiceWithMetadata.SubscriptionFutureNotificationDates;
 import org.killbill.billing.invoice.generator.InvoiceWithMetadata.SubscriptionFutureNotificationDates.UsageDef;
 import org.killbill.billing.invoice.model.DefaultInvoice;
-import org.killbill.billing.invoice.model.FixedPriceInvoiceItem;
-import org.killbill.billing.invoice.model.InvoiceItemCatalogBase;
 import org.killbill.billing.invoice.model.InvoiceItemFactory;
 import org.killbill.billing.invoice.model.ItemAdjInvoiceItem;
 import org.killbill.billing.invoice.model.ParentInvoiceItem;
-import org.killbill.billing.invoice.model.RecurringInvoiceItem;
 import org.killbill.billing.invoice.notification.DefaultNextBillingDateNotifier;
 import org.killbill.billing.invoice.notification.NextBillingDateNotificationKey;
 import org.killbill.billing.junction.BillingEvent;
@@ -116,6 +113,7 @@ import com.google.common.base.Predicate;
 import com.google.common.collect.Collections2;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Ordering;
@@ -214,27 +212,21 @@ public class InvoiceDispatcher {
         } catch (final CatalogApiException e) {
             log.warn("Failed to retrieve BillingEvents for accountId='{}'", accountId, e);
         }
-
-
-
-
     }
-
-
 
     public void processSubscriptionForInvoiceGeneration(final EffectiveSubscriptionInternalEvent transition,
                                                         final InternalCallContext context) throws InvoiceApiException {
         final UUID subscriptionId = transition.getSubscriptionId();
         final LocalDate targetDate = context.toLocalDate(transition.getEffectiveTransitionTime());
-        processSubscriptionForInvoiceGeneration(subscriptionId, targetDate, context);
+        processSubscriptionForInvoiceGeneration(subscriptionId, targetDate, false, context);
     }
 
-    public void processSubscriptionForInvoiceGeneration(final UUID subscriptionId, final LocalDate targetDate, final InternalCallContext context) throws InvoiceApiException {
-        processSubscriptionInternal(subscriptionId, targetDate, false, context);
+    public void processSubscriptionForInvoiceGeneration(final UUID subscriptionId, final LocalDate targetDate, final boolean isRescheduled, final InternalCallContext context) throws InvoiceApiException {
+        processSubscriptionInternal(subscriptionId, targetDate, false, isRescheduled, context);
     }
 
     public void processSubscriptionForInvoiceNotification(final UUID subscriptionId, final LocalDate targetDate, final InternalCallContext context) throws InvoiceApiException {
-        final Invoice dryRunInvoice = processSubscriptionInternal(subscriptionId, targetDate, true, context);
+        final Invoice dryRunInvoice = processSubscriptionInternal(subscriptionId, targetDate, true, false, context);
         if (dryRunInvoice != null && dryRunInvoice.getBalance().compareTo(BigDecimal.ZERO) > 0) {
             final InvoiceNotificationInternalEvent event = new DefaultInvoiceNotificationInternalEvent(dryRunInvoice.getAccountId(), dryRunInvoice.getBalance(), dryRunInvoice.getCurrency(),
                                                                                                        context.toUTCDateTime(targetDate), context.getAccountRecordId(), context.getTenantRecordId(), context.getUserToken());
@@ -246,7 +238,7 @@ public class InvoiceDispatcher {
         }
     }
 
-    private Invoice processSubscriptionInternal(final UUID subscriptionId, final LocalDate targetDate, final boolean dryRunForNotification, final InternalCallContext context) throws InvoiceApiException {
+    private Invoice processSubscriptionInternal(final UUID subscriptionId, final LocalDate targetDate, final boolean dryRunForNotification, final boolean isRescheduled, final InternalCallContext context) throws InvoiceApiException {
         try {
             if (subscriptionId == null) {
                 log.warn("Failed handling SubscriptionBase change.", new InvoiceApiException(ErrorCode.INVOICE_INVALID_TRANSITION));
@@ -255,7 +247,7 @@ public class InvoiceDispatcher {
             final UUID accountId = subscriptionApi.getAccountIdFromSubscriptionId(subscriptionId, context);
             final DryRunArguments dryRunArguments = dryRunForNotification ? TARGET_DATE_DRY_RUN_ARGUMENTS : null;
 
-            return processAccountFromNotificationOrBusEvent(accountId, targetDate, dryRunArguments, context);
+            return processAccountFromNotificationOrBusEvent(accountId, targetDate, dryRunArguments, isRescheduled, context);
         } catch (final SubscriptionBaseApiException e) {
             log.warn("Failed handling SubscriptionBase change.",
                      new InvoiceApiException(ErrorCode.INVOICE_NO_ACCOUNT_ID_FOR_SUBSCRIPTION_ID, subscriptionId.toString()));
@@ -266,6 +258,7 @@ public class InvoiceDispatcher {
     public Invoice processAccountFromNotificationOrBusEvent(final UUID accountId,
                                                             @Nullable final LocalDate targetDate,
                                                             @Nullable final DryRunArguments dryRunArguments,
+                                                            final boolean isRescheduled,
                                                             final InternalCallContext context) throws InvoiceApiException {
         if (!invoiceConfig.isInvoicingSystemEnabled(context)) {
             log.warn("Invoicing system is off, parking accountId='{}'", accountId);
@@ -273,13 +266,14 @@ public class InvoiceDispatcher {
             return null;
         }
 
-        return processAccount(false, accountId, targetDate, dryRunArguments, context);
+        return processAccount(false, accountId, targetDate, dryRunArguments, isRescheduled, context);
     }
 
     public Invoice processAccount(final boolean isApiCall,
                                   final UUID accountId,
                                   @Nullable final LocalDate targetDate,
                                   @Nullable final DryRunArguments dryRunArguments,
+                                  final boolean isRescheduled,
                                   final InternalCallContext context) throws InvoiceApiException {
         boolean parkedAccount = false;
         try {
@@ -296,7 +290,7 @@ public class InvoiceDispatcher {
         try {
             lock = locker.lockWithNumberOfTries(LockerType.ACCNT_INV_PAY.toString(), accountId.toString(), invoiceConfig.getMaxGlobalLockRetries());
 
-            return processAccountWithLock(parkedAccount, accountId, targetDate, dryRunArguments, context);
+            return processAccountWithLock(parkedAccount, accountId, targetDate, dryRunArguments, isRescheduled, context);
         } catch (final LockFailedException e) {
             log.warn("Failed to process invoice for accountId='{}', targetDate='{}'", accountId.toString(), targetDate, e);
         } finally {
@@ -311,6 +305,7 @@ public class InvoiceDispatcher {
                                            final UUID accountId,
                                            @Nullable final LocalDate inputTargetDateMaybeNull,
                                            @Nullable final DryRunArguments dryRunArguments,
+                                           final boolean isRescheduled,
                                            final InternalCallContext context) throws InvoiceApiException {
         final boolean isDryRun = dryRunArguments != null;
         final boolean upcomingInvoiceDryRun = isDryRun && DryRunType.UPCOMING_INVOICE.equals(dryRunArguments.getDryRunType());
@@ -340,9 +335,9 @@ public class InvoiceDispatcher {
                                                                                                                 return new DefaultInvoice(input);
                                                                                                             }
                                                                                                         }));
-            Invoice invoice;
+            final Invoice invoice;
             if (!isDryRun) {
-                invoice = processAccountWithLockAndInputTargetDate(accountId, inputTargetDate, billingEvents, existingInvoices, false, context);
+                invoice = processAccountWithLockAndInputTargetDate(accountId, inputTargetDate, billingEvents, existingInvoices, false, isRescheduled, context);
                 if (parkedAccount) {
                     try {
                         log.info("Illegal invoicing state fixed for accountId='{}', unparking account", accountId);
@@ -392,6 +387,10 @@ public class InvoiceDispatcher {
             log.warn("Failed to retrieve BillingEvents for accountId='{}', dryRunArguments='{}'", accountId, dryRunArguments, e);
             return null;
         } catch (final InvoiceApiException e) {
+            if (e.getCode() == ErrorCode.INVOICE_PLUGIN_API_ABORTED.getCode()) {
+                return null;
+            }
+
             if (e.getCode() == ErrorCode.UNEXPECTED_ERROR.getCode() && !isDryRun) {
                 log.warn("Illegal invoicing state detected for accountId='{}', dryRunArguments='{}', parking account", accountId, dryRunArguments, e);
                 parkAccount(accountId, context);
@@ -428,7 +427,7 @@ public class InvoiceDispatcher {
 
     private Invoice processDryRun_UPCOMING_INVOICE_Invoice(final UUID accountId, final List<LocalDate> allCandidateTargetDates, final BillingEventSet billingEvents, final List<Invoice> existingInvoices, final InternalCallContext context) throws InvoiceApiException {
         for (final LocalDate curTargetDate : allCandidateTargetDates) {
-            final Invoice invoice = processAccountWithLockAndInputTargetDate(accountId, curTargetDate, billingEvents, existingInvoices, true, context);
+            final Invoice invoice = processAccountWithLockAndInputTargetDate(accountId, curTargetDate, billingEvents, existingInvoices, true, false, context);
             if (invoice != null) {
                 return invoice;
             }
@@ -459,14 +458,14 @@ public class InvoiceDispatcher {
 
         // Generate a dryRun invoice for such date if required in such a way that dryRun invoice on our targetDate only contains items that we expect to see
         final Invoice additionalInvoice = prevLocalDate != null ?
-                                          processAccountWithLockAndInputTargetDate(accountId, prevLocalDate, billingEvents, existingInvoices, true, context) :
+                                          processAccountWithLockAndInputTargetDate(accountId, prevLocalDate, billingEvents, existingInvoices, true, false, context) :
                                           null;
 
         final List<Invoice> augmentedExistingInvoices = additionalInvoice != null ?
                                                         new ImmutableList.Builder().addAll(existingInvoices).add(additionalInvoice).build() :
                                                         existingInvoices;
 
-        final Invoice targetInvoice = processAccountWithLockAndInputTargetDate(accountId, targetDate, billingEvents, augmentedExistingInvoices, true, context);
+        final Invoice targetInvoice = processAccountWithLockAndInputTargetDate(accountId, targetDate, billingEvents, augmentedExistingInvoices, true, false, context);
         // If our targetDate -- user specified -- did not align with any boundary, we return previous 'additionalInvoice' invoice
         return targetInvoice != null ? targetInvoice : additionalInvoice;
     }
@@ -508,12 +507,27 @@ public class InvoiceDispatcher {
                                                              final BillingEventSet billingEvents,
                                                              final List<Invoice> existingInvoices,
                                                              final boolean isDryRun,
+                                                             final boolean isRescheduled,
                                                              final InternalCallContext internalCallContext) throws InvoiceApiException {
+        final CallContext callContext = buildCallContext(internalCallContext);
+
         final ImmutableAccountData account;
         try {
             account = accountApi.getImmutableAccountDataById(accountId, internalCallContext);
         } catch (final AccountApiException e) {
             log.error("Unable to generate invoice for accountId='{}', a future notification has NOT been recorded", accountId, e);
+            invoicePluginDispatcher.onFailureCall(targetDate, null, existingInvoices, isDryRun, isRescheduled, callContext, internalCallContext);
+            return null;
+        }
+
+        final DateTime rescheduleDate = invoicePluginDispatcher.priorCall(targetDate, existingInvoices, isDryRun, isRescheduled, callContext, internalCallContext);
+        if (rescheduleDate != null) {
+            if (isDryRun) {
+                log.warn("Ignoring rescheduleDate='{}', delayed scheduling is unsupported in dry-run", rescheduleDate);
+            } else {
+                final FutureAccountNotifications futureAccountNotifications = createNextFutureNotificationDate(rescheduleDate, billingEvents, internalCallContext);
+                commitInvoiceAndSetFutureNotifications(account, null, futureAccountNotifications, internalCallContext);
+            }
             return null;
         }
 
@@ -525,6 +539,8 @@ public class InvoiceDispatcher {
 
         // If invoice comes back null, there is nothing new to generate, we can bail early
         if (invoice == null) {
+            invoicePluginDispatcher.onSuccessCall(targetDate, null, existingInvoices, isDryRun, isRescheduled, callContext, internalCallContext);
+
             if (isDryRun) {
                 log.info("Generated null dryRun invoice for accountId='{}', targetDate='{}'", accountId, targetDate);
             } else {
@@ -541,60 +557,20 @@ public class InvoiceDispatcher {
 
         boolean success = false;
         try {
-            // Generate missing credit (> 0 for generation and < 0 for use) prior we call the plugin
+            // Generate missing credit (> 0 for generation and < 0 for use) prior we call the plugin(s)
             final InvoiceItem cbaItemPreInvoicePlugins = computeCBAOnExistingInvoice(invoice, internalCallContext);
-            DefaultInvoice tmpInvoiceForInvoicePlugins = invoice;
             if (cbaItemPreInvoicePlugins != null) {
-                tmpInvoiceForInvoicePlugins = (DefaultInvoice) tmpInvoiceForInvoicePlugins.clone();
-                tmpInvoiceForInvoicePlugins.addInvoiceItem(cbaItemPreInvoicePlugins);
+                invoice.addInvoiceItem(cbaItemPreInvoicePlugins);
             }
+
             //
             // Ask external invoice plugins if additional items (tax, etc) shall be added to the invoice
             //
-            final CallContext callContext = buildCallContext(internalCallContext);
-            final List<InvoiceItem> additionalInvoiceItemsFromPlugins = invoicePluginDispatcher.getAdditionalInvoiceItems(tmpInvoiceForInvoicePlugins, isDryRun, callContext, internalCallContext);
-            if (additionalInvoiceItemsFromPlugins.isEmpty()) {
-                // PERF: avoid re-computing the CBA if no change was made
+            final boolean invoiceUpdated = invoicePluginDispatcher.updateOriginalInvoiceWithPluginInvoiceItems(invoice, isDryRun, callContext, internalCallContext);
+            if (invoiceUpdated) {
+                // Remove the temporary CBA item as we need to re-compute CBA
                 if (cbaItemPreInvoicePlugins != null) {
-                    invoice.addInvoiceItem(cbaItemPreInvoicePlugins);
-                }
-            } else {
-
-                // Add or update items from generated invoice
-                for (final InvoiceItem cur : additionalInvoiceItemsFromPlugins) {
-                    final InvoiceItem exitingItem = Iterables.tryFind(tmpInvoiceForInvoicePlugins.getInvoiceItems(), new Predicate<InvoiceItem>() {
-                        @Override
-                        public boolean apply(final InvoiceItem input) {
-                            return input.getId().equals(cur.getId());
-                        }
-                    }).orNull();
-                    if (exitingItem != null) {
-                        invoice.removeInvoiceItem(exitingItem);
-                    }
-
-                    final InvoiceItem sanitizedInvoiceItemFromPlugin = new InvoiceItemCatalogBase(cur.getId(),
-                                                                                                  cur.getCreatedDate(),
-                                                                                                  MoreObjects.firstNonNull(cur.getInvoiceId(), invoice.getId()),
-                                                                                                  cur.getAccountId(),
-                                                                                                  cur.getBundleId(),
-                                                                                                  cur.getSubscriptionId(),
-                                                                                                  cur.getDescription(),
-                                                                                                  cur.getPlanName(),
-                                                                                                  cur.getPhaseName(),
-                                                                                                  cur.getUsageName(),
-                                                                                                  cur.getPrettyPlanName(),
-                                                                                                  cur.getPrettyPhaseName(),
-                                                                                                  cur.getPrettyUsageName(),
-                                                                                                  cur.getStartDate(),
-                                                                                                  cur.getEndDate(),
-                                                                                                  cur.getAmount(),
-                                                                                                  cur.getRate(),
-                                                                                                  cur.getCurrency(),
-                                                                                                  cur.getLinkedItemId(),
-                                                                                                  cur.getQuantity(),
-                                                                                                  cur.getItemDetails(),
-                                                                                                  cur.getInvoiceItemType());
-                    invoice.addInvoiceItem(sanitizedInvoiceItemFromPlugin);
+                    invoice.removeInvoiceItem(cbaItemPreInvoicePlugins);
                 }
 
                 // Use credit after we call the plugin (https://github.com/killbill/killbill/issues/637)
@@ -605,7 +581,6 @@ public class InvoiceDispatcher {
             }
 
             if (!isDryRun) {
-
                 // Compute whether this is a new invoice object (or just some adjustments on an existing invoice), and extract invoiceIds for later use
                 final Set<UUID> uniqueInvoiceIds = getUniqueInvoiceIds(invoice);
                 final boolean isRealInvoiceWithItems = uniqueInvoiceIds.remove(invoice.getId());
@@ -623,7 +598,7 @@ public class InvoiceDispatcher {
                 success = true;
 
                 try {
-                    setChargedThroughDates(invoice.getInvoiceItems(FixedPriceInvoiceItem.class), invoice.getInvoiceItems(RecurringInvoiceItem.class), internalCallContext);
+                    setChargedThroughDates(invoice, internalCallContext);
                 } catch (final SubscriptionBaseApiException e) {
                     log.error("Failed handling SubscriptionBase change.", e);
                     return null;
@@ -633,6 +608,13 @@ public class InvoiceDispatcher {
             // Make sure we always set future notifications in case of errors
             if (!isDryRun && !success) {
                 commitInvoiceAndSetFutureNotifications(account, null, futureAccountNotifications, internalCallContext);
+            }
+
+            if (isDryRun || success) {
+                final DefaultInvoice refreshedInvoice = isDryRun ? invoice : new DefaultInvoice(invoiceDao.getById(invoice.getId(), internalCallContext));
+                invoicePluginDispatcher.onSuccessCall(targetDate, refreshedInvoice, existingInvoices, isDryRun, isRescheduled, callContext, internalCallContext);
+            } else {
+                invoicePluginDispatcher.onFailureCall(targetDate, invoice, existingInvoices, isDryRun, isRescheduled, callContext, internalCallContext);
             }
         }
 
@@ -657,16 +639,36 @@ public class InvoiceDispatcher {
         return generator.generateInvoice(account, billingEvents, existingInvoices, targetInvoiceId, targetDate, account.getCurrency(), context);
     }
 
+    private FutureAccountNotifications createNextFutureNotificationDate(final DateTime rescheduleDate, final BillingEventSet billingEvents, final InternalCallContext context) {
+        final FutureAccountNotificationsBuilder notificationsBuilder = new FutureAccountNotificationsBuilder();
+        notificationsBuilder.setRescheduled(true);
 
+        final Set<UUID> subscriptionIds = ImmutableSet.<UUID>copyOf(Iterables.<BillingEvent, UUID>transform(billingEvents,
+                                                                                                            new Function<BillingEvent, UUID>() {
+                                                                                                                @Override
+                                                                                                                public UUID apply(final BillingEvent billingEvent) {
+                                                                                                                    return billingEvent.getSubscription().getId();
+                                                                                                                }
+                                                                                                            }));
+        populateNextFutureNotificationDate(rescheduleDate, subscriptionIds, notificationsBuilder, context);
+
+        // Even though a plugin forced us to reschedule the invoice generation, honor the dry run notifications settings
+        populateNextFutureDryRunNotificationDate(billingEvents, notificationsBuilder, context);
+
+        return notificationsBuilder.build();
+    }
+
+    private void populateNextFutureNotificationDate(final DateTime notificationDateTime, final Set<UUID> subscriptionIds, final FutureAccountNotificationsBuilder notificationsBuilder, final InternalCallContext context) {
+        final LocalDate notificationDate = context.toLocalDate(notificationDateTime);
+        notificationsBuilder.setNotificationListForTrigger(ImmutableMap.<LocalDate, Set<UUID>>of(notificationDate, subscriptionIds));
+    }
 
     private FutureAccountNotifications createNextFutureNotificationDate(final InvoiceWithMetadata invoiceWithMetadata, final BillingEventSet billingEvents, final InternalCallContext context) {
-
         final FutureAccountNotificationsBuilder notificationsBuilder = new FutureAccountNotificationsBuilder();
         populateNextFutureNotificationDate(invoiceWithMetadata, notificationsBuilder);
         populateNextFutureDryRunNotificationDate(billingEvents, notificationsBuilder, context);
         return notificationsBuilder.build();
     }
-
 
     private void populateNextFutureNotificationDate(final InvoiceWithMetadata invoiceWithMetadata, final FutureAccountNotificationsBuilder notificationsBuilder) {
         final Map<LocalDate, Set<UUID>> notificationListForTrigger = new HashMap<LocalDate, Set<UUID>>();
@@ -811,12 +813,23 @@ public class InvoiceDispatcher {
         return internalCallContextFactory.createCallContext(context);
     }
 
-    private void setChargedThroughDates(final Collection<InvoiceItem> fixedPriceItems,
-                                        final Collection<InvoiceItem> recurringItems,
-                                        final InternalCallContext context) throws SubscriptionBaseApiException {
+    private void setChargedThroughDates(final Invoice invoice, final InternalCallContext context) throws SubscriptionBaseApiException {
+        // Don't use invoice.getInvoiceItems(final Class<T> clazz) as some items can come from plugins
+        final Collection<InvoiceItem> invoiceItemsToConsider = new LinkedList<InvoiceItem>();
+        for (final InvoiceItem invoiceItem : invoice.getInvoiceItems()) {
+            switch (invoiceItem.getInvoiceItemType()) {
+                case FIXED:
+                case RECURRING:
+                case USAGE:
+                    invoiceItemsToConsider.add(invoiceItem);
+                    break;
+                default:
+                    break;
+            }
+        }
+
         final Map<UUID, DateTime> chargeThroughDates = new HashMap<UUID, DateTime>();
-        addInvoiceItemsToChargeThroughDates(chargeThroughDates, fixedPriceItems, context);
-        addInvoiceItemsToChargeThroughDates(chargeThroughDates, recurringItems, context);
+        addInvoiceItemsToChargeThroughDates(chargeThroughDates, invoiceItemsToConsider, context);
 
         for (final UUID subscriptionId : chargeThroughDates.keySet()) {
             if (subscriptionId != null) {
@@ -857,14 +870,16 @@ public class InvoiceDispatcher {
 
         private final Map<LocalDate, Set<UUID>> notificationListForTrigger;
         private final Map<LocalDate, Set<UUID>> notificationListForDryRun;
+        private final boolean isRescheduled;
 
         public FutureAccountNotifications() {
-            this(ImmutableMap.<LocalDate, Set<UUID>>of(), ImmutableMap.<LocalDate, Set<UUID>>of());
+            this(ImmutableMap.<LocalDate, Set<UUID>>of(), ImmutableMap.<LocalDate, Set<UUID>>of(), false);
         }
 
-        public FutureAccountNotifications(final Map<LocalDate, Set<UUID>> notificationListForTrigger, final Map<LocalDate, Set<UUID>> notificationListForDryRun) {
+        public FutureAccountNotifications(final Map<LocalDate, Set<UUID>> notificationListForTrigger, final Map<LocalDate, Set<UUID>> notificationListForDryRun, final boolean isRescheduled) {
             this.notificationListForTrigger = notificationListForTrigger;
             this.notificationListForDryRun = notificationListForDryRun;
+            this.isRescheduled = isRescheduled;
         }
 
         public Map<LocalDate, Set<UUID>> getNotificationsForTrigger() {
@@ -875,12 +890,15 @@ public class InvoiceDispatcher {
             return notificationListForDryRun;
         }
 
-
+        public boolean isRescheduled() {
+            return isRescheduled;
+        }
 
         public static class FutureAccountNotificationsBuilder {
 
             private Map<LocalDate, Set<UUID>> notificationListForTrigger;
             private Map<LocalDate, Set<UUID>> notificationListForDryRun;
+            private boolean isRescheduled = false;
 
             public FutureAccountNotificationsBuilder() {
             }
@@ -893,6 +911,10 @@ public class InvoiceDispatcher {
                 this.notificationListForDryRun = notificationListForDryRun;
             }
 
+            public void setRescheduled(final boolean rescheduled) {
+                isRescheduled = rescheduled;
+            }
+
             public Map<LocalDate, Set<UUID>> getNotificationListForTrigger() {
                 return MoreObjects.firstNonNull(notificationListForTrigger, ImmutableMap.<LocalDate, Set<UUID>>of());
             }
@@ -901,8 +923,12 @@ public class InvoiceDispatcher {
                 return MoreObjects.firstNonNull(notificationListForDryRun, ImmutableMap.<LocalDate, Set<UUID>>of());
             }
 
+            public boolean isRescheduled() {
+                return isRescheduled;
+            }
+
             public FutureAccountNotifications build() {
-                return new FutureAccountNotifications(getNotificationListForTrigger(), getNotificationListForDryRun());
+                return new FutureAccountNotifications(getNotificationListForTrigger(), getNotificationListForDryRun(), isRescheduled());
             }
         }
     }

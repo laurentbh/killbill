@@ -303,5 +303,7 @@ public interface JaxrsResource {
 
     public static final String QUERY_INCLUDED_DELETED = "includedDeleted";
 
+    public static final String AUDIT_LOG = "auditLogs";
+    public static final String AUDIT_LOG_WITH_HISTORY = "auditLogsWithHistory";
 
 }

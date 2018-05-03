@@ -1,7 +1,9 @@
 /*
  * Copyright 2010-2013 Ning, Inc.
+ * Copyright 2014-2018 Groupon, Inc
+ * Copyright 2014-2018 The Billing Project, LLC
  *
- * Ning licenses this file to you under the Apache License, version 2.0
+ * The Billing Project licenses this file to you under the Apache License, version 2.0
  * (the "License"); you may not use this file except in compliance with the
  * License.  You may obtain a copy of the License at:
  *
@@ -43,7 +45,7 @@ public class AddonUtils {
     public AddonUtils() {
     }
 
-    public void checkAddonCreationRights(final DefaultSubscriptionBase baseSubscription, final Plan targetAddOnPlan, final DateTime requestedDate, final Catalog catalog, final InternalTenantContext context)
+    public void checkAddonCreationRights(final SubscriptionBase baseSubscription, final Plan targetAddOnPlan, final DateTime requestedDate, final Catalog catalog, final InternalTenantContext context)
             throws SubscriptionBaseApiException, CatalogApiException {
 
         if (baseSubscription.getState() == EntitlementState.CANCELLED ||
@@ -126,9 +128,9 @@ public class AddonUtils {
         return false;
     }
 
-    public int countExistingAddOnsWithSamePlanName(final List<SubscriptionBase> subscriptionsForBundle, final String planName) {
+    public int countExistingAddOnsWithSamePlanName(final Iterable<SubscriptionBase> subscriptionsForBundle, final String planName) {
         int countExistingAddOns = 0;
-        for (SubscriptionBase subscription : subscriptionsForBundle) {
+        for (final SubscriptionBase subscription : subscriptionsForBundle) {
             if (subscription.getCurrentPlan().getName().equalsIgnoreCase(planName)
                 && subscription.getLastActiveProduct().getCategory() != null
                 && ProductCategory.ADD_ON.equals(subscription.getLastActiveProduct().getCategory())) {

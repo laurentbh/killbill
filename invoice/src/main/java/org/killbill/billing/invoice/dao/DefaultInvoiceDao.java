@@ -916,7 +916,7 @@ public class DefaultInvoiceDao extends EntityDaoBase<InvoiceModelDao, Invoice, I
 
                 // First, adjust the same invoice with the CBA amount to "delete"
                 final InvoiceItemModelDao cbaAdjItem = new InvoiceItemModelDao(context.getCreatedDate(), InvoiceItemType.CBA_ADJ, invoice.getId(), invoice.getAccountId(),
-                                                                               null, null, null, null, null, null, context.getCreatedDate().toLocalDate(),
+                                                                               null, null, null, null, null, null, null, context.getCreatedDate().toLocalDate(),
                                                                                null, cbaItem.getAmount().negate(), null, cbaItem.getCurrency(), cbaItem.getId());
                 createInvoiceItemFromTransaction(invoiceItemSqlDao, cbaAdjItem, context);
 
@@ -972,7 +972,7 @@ public class DefaultInvoiceDao extends EntityDaoBase<InvoiceModelDao, Invoice, I
 
                         // Add the adjustment on that invoice
                         final InvoiceItemModelDao nextCBAAdjItem = new InvoiceItemModelDao(context.getCreatedDate(), InvoiceItemType.CBA_ADJ, invoiceFollowing.getId(),
-                                                                                           invoice.getAccountId(), null, null, null, null, null, null,
+                                                                                           invoice.getAccountId(), null, null, null, null, null, null, null,
                                                                                            context.getCreatedDate().toLocalDate(), null,
                                                                                            positiveCBAAdjItemAmount, null, cbaItem.getCurrency(), cbaItem.getId());
                         createInvoiceItemFromTransaction(invoiceItemSqlDao, nextCBAAdjItem, context);
@@ -1000,13 +1000,14 @@ public class DefaultInvoiceDao extends EntityDaoBase<InvoiceModelDao, Invoice, I
         });
     }
 
-    private void notifyOfFutureBillingEvents(final EntitySqlDaoWrapperFactory entitySqlDaoWrapperFactory, final UUID accountId,
-                                             final FutureAccountNotifications callbackDateTimePerSubscriptions, final InternalCallContext internalCallContext) {
-
+    private void notifyOfFutureBillingEvents(final EntitySqlDaoWrapperFactory entitySqlDaoWrapperFactory,
+                                             final UUID accountId,
+                                             final FutureAccountNotifications callbackDateTimePerSubscriptions,
+                                             final InternalCallContext internalCallContext) {
         for (final LocalDate notificationDate : callbackDateTimePerSubscriptions.getNotificationsForTrigger().keySet()) {
             final DateTime notificationDateTime = internalCallContext.toUTCDateTime(notificationDate);
             final Set<UUID> subscriptionIds = callbackDateTimePerSubscriptions.getNotificationsForTrigger().get(notificationDate);
-            nextBillingDatePoster.insertNextBillingNotificationFromTransaction(entitySqlDaoWrapperFactory, accountId, subscriptionIds, notificationDateTime, internalCallContext);
+            nextBillingDatePoster.insertNextBillingNotificationFromTransaction(entitySqlDaoWrapperFactory, accountId, subscriptionIds, notificationDateTime, callbackDateTimePerSubscriptions.isRescheduled(), internalCallContext);
         }
 
         final long dryRunNotificationTime = invoiceConfig.getDryRunNotificationSchedule(internalCallContext).getMillis();
@@ -1141,11 +1142,10 @@ public class DefaultInvoiceDao extends EntityDaoBase<InvoiceModelDao, Invoice, I
     private void notifyOfParentInvoiceCreation(final EntitySqlDaoWrapperFactory entitySqlDaoWrapperFactory,
                                                final InvoiceModelDao parentInvoice,
                                                final InternalCallContext context) {
-        final DateTime now = clock.getUTCNow();
         final LocalTime localTime = LocalTime.parse(invoiceConfig.getParentAutoCommitUtcTime(context));
 
-        DateTime targetFutureNotificationDate = now.withTime(localTime);
-        while (targetFutureNotificationDate.compareTo(now) < 0) {
+        DateTime targetFutureNotificationDate = context.getCreatedDate().withTime(localTime);
+        while (targetFutureNotificationDate.compareTo(context.getCreatedDate()) < 0) {
             targetFutureNotificationDate = targetFutureNotificationDate.plusDays(1);
         }
 

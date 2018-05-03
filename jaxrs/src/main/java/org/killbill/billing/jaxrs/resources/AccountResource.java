@@ -34,6 +34,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import javax.annotation.Nullable;
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.DELETE;
@@ -82,6 +83,7 @@ import org.killbill.billing.jaxrs.JaxrsExecutors;
 import org.killbill.billing.jaxrs.json.AccountEmailJson;
 import org.killbill.billing.jaxrs.json.AccountJson;
 import org.killbill.billing.jaxrs.json.AccountTimelineJson;
+import org.killbill.billing.jaxrs.json.AuditLogJson;
 import org.killbill.billing.jaxrs.json.BlockingStateJson;
 import org.killbill.billing.jaxrs.json.BundleJson;
 import org.killbill.billing.jaxrs.json.CustomFieldJson;
@@ -118,6 +120,8 @@ import org.killbill.billing.util.api.TagApiException;
 import org.killbill.billing.util.api.TagDefinitionApiException;
 import org.killbill.billing.util.api.TagUserApi;
 import org.killbill.billing.util.audit.AccountAuditLogs;
+import org.killbill.billing.util.audit.AuditLog;
+import org.killbill.billing.util.audit.AuditLogWithHistory;
 import org.killbill.billing.util.callcontext.CallContext;
 import org.killbill.billing.util.callcontext.TenantContext;
 import org.killbill.billing.util.config.definition.JaxrsConfig;
@@ -700,7 +704,7 @@ public class AccountResource extends JaxRsResourceBase {
     @GET
     @Path("/{accountId:" + UUID_PATTERN + "}/" + INVOICES)
     @Produces(APPLICATION_JSON)
-    @ApiOperation(value = "Retrieve account invoices", response = InvoiceJson.class)
+    @ApiOperation(value = "Retrieve account invoices", response = InvoiceJson.class, responseContainer = "List")
     @ApiResponses(value = {@ApiResponse(code = 400, message = "Invalid account id supplied"),
                            @ApiResponse(code = 404, message = "Account not found")})
     public Response getInvoices(@PathParam("accountId") final UUID accountId,
@@ -1483,5 +1487,49 @@ public class AccountResource extends JaxRsResourceBase {
         invoiceApi.transferChildCreditToParent(childAccountId, callContext);
         return Response.status(Response.Status.OK).build();
     }
+
+    /*
+     * *************************     AUDIT LOGS     *****************************
+     */
+
+    @TimedResource
+    @GET
+    @Path("/{accountId:" + UUID_PATTERN + "}/" + AUDIT_LOG)
+    @Produces(APPLICATION_JSON)
+    @ApiOperation(value = "Retrieve audit logs by account id", response = AuditLogJson.class, responseContainer = "List")
+    @ApiResponses(value = {@ApiResponse(code = 404, message = "Account not found")})
+    public Response getAccountAuditLogs(@PathParam("accountId") final UUID accountId,
+                               @javax.ws.rs.core.Context final HttpServletRequest request) throws AccountApiException {
+        final TenantContext tenantContext = context.createTenantContextWithAccountId(accountId, request);
+        final AccountAuditLogs accountAuditLogs = auditUserApi.getAccountAuditLogs(accountId, AuditLevel.FULL, tenantContext);
+        return Response.status(Status.OK).entity(getAuditLogs(accountAuditLogs)).build();
+    }
+
+    @TimedResource
+    @GET
+    @Path("/{accountId:" + UUID_PATTERN + "}/" + AUDIT_LOG_WITH_HISTORY)
+    @Produces(APPLICATION_JSON)
+    @ApiOperation(value = "Retrieve account audit logs with history by account id", response = AuditLogJson.class, responseContainer = "List")
+    @ApiResponses(value = {@ApiResponse(code = 404, message = "Account not found")})
+    public Response getAccountAuditLogsWithHistory(@PathParam("accountId") final UUID accountId,
+                                        @javax.ws.rs.core.Context final HttpServletRequest request) throws AccountApiException {
+        final TenantContext tenantContext = context.createTenantContextWithAccountId(accountId, request);
+        final List<AuditLogWithHistory> auditLogWithHistory = accountUserApi.getAuditLogsWithHistoryForId(accountId, AuditLevel.FULL, tenantContext);
+        return Response.status(Status.OK).entity(getAuditLogsWithHistory(auditLogWithHistory)).build();
+    }
+
+    private List<AuditLogJson> getAuditLogs(AccountAuditLogs accountAuditLogs) {
+        if (accountAuditLogs.getAuditLogs() == null) {
+            return null;
+        }
+
+        return ImmutableList.<AuditLogJson>copyOf(Collections2.transform(accountAuditLogs.getAuditLogs(), new Function<AuditLog, AuditLogJson>() {
+            @Override
+            public AuditLogJson apply(@Nullable final AuditLog input) {
+                return new AuditLogJson(input);
+            }
+        }));
+    }
+
 
 }

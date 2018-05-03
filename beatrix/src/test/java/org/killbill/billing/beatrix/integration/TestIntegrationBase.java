@@ -102,6 +102,7 @@ import org.killbill.billing.payment.api.TransactionType;
 import org.killbill.billing.payment.invoice.InvoicePaymentControlPluginApi;
 import org.killbill.billing.payment.provider.MockPaymentProviderPlugin;
 import org.killbill.billing.subscription.api.SubscriptionBase;
+import org.killbill.billing.subscription.api.SubscriptionBaseInternalApi;
 import org.killbill.billing.subscription.api.SubscriptionBaseService;
 import org.killbill.billing.subscription.api.timeline.SubscriptionBaseTimelineApi;
 import org.killbill.billing.subscription.api.transfer.SubscriptionBaseTransferApi;
@@ -119,6 +120,7 @@ import org.killbill.billing.util.dao.NonEntityDao;
 import org.killbill.billing.util.nodes.KillbillNodesApi;
 import org.killbill.billing.util.tag.ControlTagType;
 import org.killbill.bus.api.PersistentBus;
+import org.killbill.bus.api.PersistentBus.EventBusException;
 import org.skife.config.ConfigurationObjectFactory;
 import org.skife.config.TimeSpan;
 import org.slf4j.Logger;
@@ -222,6 +224,8 @@ public class TestIntegrationBase extends BeatrixTestSuiteWithEmbeddedDB implemen
     @Inject
     protected SubscriptionApi subscriptionApi;
 
+    @Inject
+    protected SubscriptionBaseInternalApi subscriptionBaseInternalApiApi;
 
     @Named(BeatrixIntegrationModule.NON_OSGI_PLUGIN_NAME)
     @Inject
@@ -303,8 +307,17 @@ public class TestIntegrationBase extends BeatrixTestSuiteWithEmbeddedDB implemen
 
     @BeforeClass(groups = "slow")
     public void beforeClass() throws Exception {
+        if (hasFailed()) {
+            return;
+        }
+
         final InvoiceConfig defaultInvoiceConfig = new ConfigurationObjectFactory(skifeConfigSource).build(InvoiceConfig.class);
         invoiceConfig = new ConfigurableInvoiceConfig(defaultInvoiceConfig);
+        // The default value is 50, i.e. wait 50 x 100ms = 5s to get the lock. This isn't always enough and can lead to random tests failures
+        // in the listener status: after moving the clock, if there are two notifications triggering an invoice run, we typically expect
+        // both an INVOICE and a NULL_INVOICE event. If the invoice generation takes too long, the NULL_INVOICE event is never generated
+        // (LockFailedException): the test itself doesn't fail (the correct invoice is generated), but assertListenerStatus() would.
+        invoiceConfig.setMaxGlobalLockRetries(150);
         final Injector g = Guice.createInjector(Stage.PRODUCTION, new BeatrixIntegrationModule(configSource, invoiceConfig));
         g.injectMembers(this);
     }
@@ -327,10 +340,14 @@ public class TestIntegrationBase extends BeatrixTestSuiteWithEmbeddedDB implemen
 
         // Start services
         lifecycle.fireStartupSequencePriorEventRegistration();
-        busService.getBus().register(busHandler);
+        registerHandlers();
         lifecycle.fireStartupSequencePostEventRegistration();
 
         paymentPlugin.clear();
+    }
+
+    protected void registerHandlers() throws EventBusException {
+        busService.getBus().register(busHandler);
     }
 
     @AfterMethod(groups = "slow")
@@ -656,9 +673,9 @@ public class TestIntegrationBase extends BeatrixTestSuiteWithEmbeddedDB implemen
             public Entitlement apply(@Nullable final Void dontcare) {
                 try {
                     final PlanPhaseSpecifier spec = new PlanPhaseSpecifier(productName, billingPeriod, PriceListSet.DEFAULT_PRICELIST_NAME, null);
-                    final Entitlement entitlement = entitlementApi.createBaseEntitlement(accountId, spec, bundleExternalKey, overrides, null, null, false, true, ImmutableList.<PluginProperty>of(), callContext);
-                    assertNotNull(entitlement);
-                    return entitlement;
+                    final UUID entitlementId = entitlementApi.createBaseEntitlement(accountId, spec, bundleExternalKey, overrides, null, null, false, true, ImmutableList.<PluginProperty>of(), callContext);
+                    assertNotNull(entitlementId);
+                    return entitlementApi.getEntitlementForId(entitlementId, callContext);
                 } catch (final EntitlementApiException e) {
                     fail("Unable to create entitlement", e);
                     return null;
@@ -690,9 +707,9 @@ public class TestIntegrationBase extends BeatrixTestSuiteWithEmbeddedDB implemen
             public Entitlement apply(@Nullable final Void dontcare) {
                 try {
                     final PlanPhaseSpecifier spec = new PlanPhaseSpecifier(productName, billingPeriod, PriceListSet.DEFAULT_PRICELIST_NAME, null);
-                    final Entitlement entitlement = entitlementApi.addEntitlement(bundleId, spec, null, null, null, false, ImmutableList.<PluginProperty>of(), callContext);
-                    assertNotNull(entitlement);
-                    return entitlement;
+                    final UUID entitlementId = entitlementApi.addEntitlement(bundleId, spec, null, null, null, false, ImmutableList.<PluginProperty>of(), callContext);
+                    assertNotNull(entitlementId);
+                    return entitlementApi.getEntitlementForId(entitlementId, callContext);
                 } catch (final EntitlementApiException e) {
                     fail(e.getMessage());
                     return null;
@@ -970,10 +987,12 @@ public class TestIntegrationBase extends BeatrixTestSuiteWithEmbeddedDB implemen
 
         private final InvoiceConfig defaultInvoiceConfig;
 
+        private int maxGlobalLockRetries;
         private boolean isInvoicingSystemEnabled;
 
         public ConfigurableInvoiceConfig(final InvoiceConfig defaultInvoiceConfig) {
             this.defaultInvoiceConfig = defaultInvoiceConfig;
+            maxGlobalLockRetries = defaultInvoiceConfig.getMaxGlobalLockRetries();
             isInvoicingSystemEnabled = defaultInvoiceConfig.isInvoicingSystemEnabled();
         }
 
@@ -1029,7 +1048,7 @@ public class TestIntegrationBase extends BeatrixTestSuiteWithEmbeddedDB implemen
 
         @Override
         public int getMaxGlobalLockRetries() {
-            return defaultInvoiceConfig.getMaxGlobalLockRetries();
+            return maxGlobalLockRetries;
         }
 
         @Override
@@ -1075,6 +1094,10 @@ public class TestIntegrationBase extends BeatrixTestSuiteWithEmbeddedDB implemen
         @Override
         public UsageDetailMode getItemResultBehaviorMode(final InternalTenantContext tenantContext) {
             return getItemResultBehaviorMode();
+        }
+
+        public void setMaxGlobalLockRetries(final int maxGlobalLockRetries) {
+            this.maxGlobalLockRetries = maxGlobalLockRetries;
         }
 
         public void setInvoicingSystemEnabled(final boolean invoicingSystemEnabled) {

@@ -40,11 +40,16 @@ import org.killbill.billing.invoice.api.InvoiceItem;
 import org.killbill.billing.invoice.api.InvoiceItemType;
 import org.killbill.billing.invoice.model.ExternalChargeInvoiceItem;
 import org.killbill.billing.invoice.model.TaxInvoiceItem;
+import org.killbill.billing.invoice.plugin.api.InvoiceContext;
 import org.killbill.billing.invoice.plugin.api.InvoicePluginApi;
+import org.killbill.billing.invoice.plugin.api.OnFailureInvoiceResult;
+import org.killbill.billing.invoice.plugin.api.OnSuccessInvoiceResult;
+import org.killbill.billing.invoice.plugin.api.PriorInvoiceResult;
 import org.killbill.billing.osgi.api.OSGIServiceDescriptor;
 import org.killbill.billing.osgi.api.OSGIServiceRegistration;
 import org.killbill.billing.payment.api.PluginProperty;
 import org.killbill.billing.util.callcontext.CallContext;
+import org.testng.Assert;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
@@ -293,13 +298,45 @@ public class TestWithTaxItems extends TestIntegrationBase {
         }
 
         @Override
+        public PriorInvoiceResult priorCall(final InvoiceContext invoiceContext, final Iterable<PluginProperty> pluginProperties) {
+            return null;
+        }
+
+        @Override
         public List<InvoiceItem> getAdditionalInvoiceItems(final Invoice invoice, final boolean isDryRun, final Iterable<PluginProperty> pluginProperties, final CallContext callContext) {
             final List<InvoiceItem> result = new ArrayList<InvoiceItem>();
-            for (TaxInvoiceItem item : taxItems) {
+            for (final TaxInvoiceItem item : taxItems) {
                 result.add(new TaxInvoiceItem(item.getId(), invoice.getId(), invoice.getAccountId(), item.getBundleId(), "Tax Item", item.getStartDate(), item.getAmount(), invoice.getCurrency()));
             }
-            taxItems.clear();
             return result;
+        }
+
+        @Override
+        public OnSuccessInvoiceResult onSuccessCall(final InvoiceContext invoiceContext, final Iterable<PluginProperty> pluginProperties) {
+            Assert.assertFalse(invoiceContext.isRescheduled());
+
+            final Invoice invoice = invoiceContext.getInvoice();
+            Assert.assertNotNull(invoice);
+            for (final TaxInvoiceItem taxInvoiceItem : taxItems) {
+                final InvoiceItem createdTaxInvoiceItem = Iterables.<InvoiceItem>find(invoice.getInvoiceItems(),
+                                                                                      new Predicate<InvoiceItem>() {
+                                                                                          @Override
+                                                                                          public boolean apply(final InvoiceItem invoiceItem) {
+                                                                                              return invoiceItem.getId().compareTo(taxInvoiceItem.getId()) == 0;
+                                                                                          }
+                                                                                      });
+                Assert.assertEquals(createdTaxInvoiceItem.getAccountId(), taxInvoiceItem.getAccountId());
+            }
+
+            reset();
+
+            return null;
+        }
+
+        @Override
+        public OnFailureInvoiceResult onFailureCall(final InvoiceContext invoiceContext, final Iterable<PluginProperty> pluginProperties) {
+            Assert.fail();
+            return null;
         }
 
         public void reset() {
@@ -309,6 +346,5 @@ public class TestWithTaxItems extends TestIntegrationBase {
         public void addTaxItem(final TaxInvoiceItem item) {
             taxItems.add(item);
         }
-
     }
 }
